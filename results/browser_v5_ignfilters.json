@@ -1,0 +1,40 @@
+{
+ "first_load_s": 2.94,
+ "subsequent_load_s": 1.92,
+ "first_visit_no_cache_s": 3.98,
+ "first_load_runs_s": [
+  3.37,
+  2.25,
+  3.15,
+  2.42,
+  3.22,
+  3.15,
+  3.54,
+  3.03,
+  2.24,
+  3.01
+ ],
+ "excluded_run_s": 1.96,
+ "excluded_reason": "dim_brand/dim_product/dim_pack_size were not invalidated",
+ "subsequent_load_runs_s": [
+  2.37,
+  2.04,
+  1.54,
+  1.84,
+  2.05,
+  1.77,
+  1.77,
+  1.9,
+  1.98,
+  1.9
+ ],
+ "subsequent_load_mean_s": 1.92,
+ "first_load_mean_s": 2.94,
+ "first_load_stdev_s": 0.47,
+ "subsequent_load_stdev_s": 0.22,
+ "first_load_median_s": 3.09,
+ "subsequent_load_median_s": 1.9,
+ "n_first": 10,
+ "n_subsequent": 10,
+ "runs_4_to_10_note": "added 2026-10-14 16:13-17:13; first load = click on Refresh -> last lakeview-query response (refresh_measure.js)"
+}

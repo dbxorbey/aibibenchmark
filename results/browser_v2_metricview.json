@@ -1,0 +1,38 @@
+{
+ "first_load_s": 5.51,
+ "subsequent_load_s": 2.55,
+ "first_visit_no_cache_s": 6.32,
+ "first_load_runs_s": [
+  4.81,
+  4.78,
+  5.98,
+  5.8,
+  5.14,
+  6.34,
+  6.71,
+  5.24,
+  5.32,
+  4.98
+ ],
+ "subsequent_load_runs_s": [
+  3.65,
+  2.54,
+  2.03,
+  3.36,
+  2.25,
+  2.47,
+  2.43,
+  2.1,
+  2.09,
+  2.6
+ ],
+ "subsequent_load_mean_s": 2.55,
+ "first_load_mean_s": 5.51,
+ "first_load_stdev_s": 0.67,
+ "subsequent_load_stdev_s": 0.54,
+ "first_load_median_s": 5.28,
+ "subsequent_load_median_s": 2.45,
+ "n_first": 10,
+ "n_subsequent": 10,
+ "runs_4_to_10_note": "added 2026-10-14 16:13-17:13; first load = click on Refresh -> last lakeview-query response (refresh_measure.js)"
+}
