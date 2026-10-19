@@ -101,7 +101,7 @@ function panel(id, rows, W, YMAX, title) {
     const top = y(m + s);
     el('text', {class: 'val', x: cx, y: top - (i ? 18 : 6), 'text-anchor': 'middle'}, svg, `${m.toFixed(2)} ± ${s.toFixed(2)} s`);
     if (i) { const p = mean(rows[i - 1].runs);
-      el('text', {class: 'chg', x: cx, y: top - 6, 'text-anchor': 'middle'}, svg, `−${Math.round((1 - m / p) * 100)}%`); }
+      el('text', {class: 'chg', x: cx, y: top - 6, 'text-anchor': 'middle'}, svg, (c => `${c > 0 ? '+' : c < 0 ? '−' : '±'}${Math.abs(c)}%`)(Math.round((m / p - 1) * 100))); }
     el('text', {class: 'lab', x: cx, y: H - bottom + 18, 'text-anchor': 'middle'}, svg, d.l1);
     el('text', {class: 'lab2', x: cx, y: H - bottom + 33, 'text-anchor': 'middle'}, svg, d.l2);
     const hit = el('rect', {class: 'hit', x: cx - slot / 2, y: padTop - 20, width: slot, height: plotH + 20}, svg);

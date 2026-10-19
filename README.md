@@ -5,9 +5,15 @@ What actually makes a Databricks AI/BI (Lakeview) dashboard load fast? This repo
 techniques **one at a time** (each step keeps the previous ones). Every step was measured 10 times, both as a pure
 query replay and in the browser.
 
-**Result:** cold landing-page load in the browser went from **9.4 s to 1.0 s** (−90%). Write-up:
-[`blog/blog_post.md`](blog/blog_post.md) (PDF: `blog/blog_post.pdf`), full numbers and statistics:
-[`RESULTS.md`](RESULTS.md), raw runs: `results/`.
+**Latest run: [`lc/`](lc/README.md).** Re-run on a baseline with liquid clustering and a metric view on the
+star schema. Every lever is measured both on its own and stacked. Stacked, the cold browser load went from
+**10.3 s to 1.0 s** (−91%). On its own: Lakehouse//RT −66%, pre-joined table −55%, dropdowns from small tables −23%,
+materialized grain −22%, fewer widgets −20%. Liquid clustering itself gave no gain at 10M rows. Write-up:
+[`lc/blog/blog_post.md`](lc/blog/blog_post.md).
+
+**First run (this folder):** cumulative steps on an unclustered star schema. The cold landing-page load in the
+browser went from **9.4 s to 1.0 s** (−90%). Write-up: [`blog/blog_post.md`](blog/blog_post.md) (PDF:
+`blog/blog_post.pdf`), full numbers and statistics: [`RESULTS.md`](RESULTS.md), raw runs: `results/`.
 
 | Step | What changes | Browser first load |
 |---|---|---:|
@@ -36,6 +42,7 @@ query replay and in the browser.
 | `browser/*.js` | browser timing snippets (run in the published dashboard, e.g. via Chrome DevTools) |
 | `record.sh` | appends one browser measurement to `results/browser_runs_extra.jsonl` |
 | `report.py`, `chart.py`, `blog_pdf.py` | results table, chart (`blog/runs_chart.*`), blog PDF |
+| `lc/` | latest run: liquid clustering + metric view baseline, isolated and stacked levers (see `lc/README.md`) |
 
 ## Running it
 

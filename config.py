@@ -3,6 +3,7 @@
   DATABRICKS_CONFIG_PROFILE   profile in ~/.databrickscfg (optional; otherwise the SDK's default auth chain is used)
   BENCH_CATALOG               Unity Catalog catalog for the benchmark tables (default: main)
   BENCH_SCHEMA                schema for the benchmark tables (default: aibi_bench)
+  BENCH_SCHEMA_LC             schema for the liquid-clustered copies used by lc/ (default: <BENCH_SCHEMA>_lc)
   BENCH_WAREHOUSE_PRO         id of the serverless PRO warehouse (steps 0-5)
   BENCH_WAREHOUSE_RT          id of the Lakehouse//RT warehouse (step 6)
   BENCH_WAREHOUSE_SETUP       warehouse for data generation and cache invalidation (default: BENCH_WAREHOUSE_PRO)
@@ -14,6 +15,7 @@ import sys
 PROFILE = os.environ.get("DATABRICKS_CONFIG_PROFILE") or None
 CATALOG = os.environ.get("BENCH_CATALOG", "main")
 SCHEMA = os.environ.get("BENCH_SCHEMA", "aibi_bench")
+SCHEMA_LC = os.environ.get("BENCH_SCHEMA_LC", f"{SCHEMA}_lc")
 WAREHOUSES = {"pro": os.environ.get("BENCH_WAREHOUSE_PRO", ""), "rt": os.environ.get("BENCH_WAREHOUSE_RT", "")}
 DASHBOARD_FOLDER = os.environ.get("BENCH_DASHBOARD_FOLDER") or None
 
@@ -33,7 +35,7 @@ def warehouse(key_or_id: str) -> str:
 
 
 def substitute(sql: str, **extra) -> str:
-    """Fill the ${catalog} / ${schema} (and any extra ${name}) placeholders used in sql/*.sql."""
-    for k, v in {"catalog": CATALOG, "schema": SCHEMA, **extra}.items():
+    """Fill the ${catalog} / ${schema} / ${schema_lc} (and any extra ${name}) placeholders used in sql/*.sql."""
+    for k, v in {"catalog": CATALOG, "schema": SCHEMA, "schema_lc": SCHEMA_LC, **extra}.items():
         sql = sql.replace("${" + k + "}", str(v))
     return sql
