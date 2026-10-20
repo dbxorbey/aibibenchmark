@@ -1,4 +1,4 @@
-"""Bar charts of the liquid-clustering re-run (browser first load): isolated (vs baseline) and stacked (vs previous bar).
+"""Bar charts of the liquid-clustering re-run (browser first load): isolated and stacked, % always vs the baseline.
 
 Same style as ../chart.py (reuses its page template and SVG export).
 
@@ -43,6 +43,7 @@ def main():
           .replace("'Browser first load per cumulative step, descending from 9.4 s to 1.0 s'",
                    "'Browser first load of the baseline and of each measure applied alone to the baseline'"))
     write("stacked", STACKED, chart.PAGE
+          .replace("const p = mean(rows[i - 1].runs);", "const p = mean(rows[0].runs);")
           .replace("descending from 9.4 s to 1.0 s", f"descending from {first:.1f} s to {last:.1f} s"))
 
 

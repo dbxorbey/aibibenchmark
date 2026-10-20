@@ -100,20 +100,20 @@ The same levers, now applied one after another, each step keeping the previous o
 ![Browser first load per step](stacked_chart.svg)
 
 *Browser first load per step, from 10.3 s to 1.0 s. Mean of 10 runs with all caches invalidated; error bars and "±"
-are one standard deviation, % is the change vs the previous bar. Serverless SQL warehouse Small, last bar
-Lakehouse//RT Small. Liquid clustering and a metric view in every step.*
+are one standard deviation, % is the change vs the baseline. Serverless SQL warehouse Small, last bar Lakehouse//RT
+Small. Liquid clustering and a metric view in every step.*
 
-| Step (on top of the previous ones) | Browser first load | Change (browser) | Replay first load | Change (replay) |
+| Step (on top of the previous ones) | Browser first load | Change vs baseline (browser) | Replay first load | Change vs baseline (replay) |
 |---|---:|---:|---:|---:|
 | Baseline (star schema) | 10.31 ± 1.45 s | | 8.35 ± 0.54 s | |
-| Pre-joined wide table instead of a star schema | 4.67 ± 0.62 s | **−55% ± 3** | 4.55 ± 0.58 s | −45% ± 2 |
-| Materialized aggregate at chart grain | 4.84 ± 0.63 s | +3% ± 6 (not significant) | 3.81 ± 0.35 s | −16% ± 4 |
-| Only the main chart on the landing page | 3.91 ± 0.45 s | **−19% ± 4** | 2.11 ± 0.53 s | −45% ± 5 |
-| Filter dropdowns fed from small dimension tables | 2.63 ± 0.38 s | **−33% ± 4** | 1.95 ± 0.25 s | −7% ± 8 (not significant) |
-| Lakehouse//RT warehouse | 0.96 ± 0.18 s | **−63% ± 3** | 0.29 ± 0.01 s * | −85% ± 1 |
-| **All measures together (vs baseline)** | **0.96 ± 0.18 s** | **−91% ± 1** | **0.29 ± 0.01 s** * | **−96%** |
+| + Pre-joined wide table instead of a star schema | 4.67 ± 0.62 s | **−55% ± 3** | 4.55 ± 0.58 s | −45% ± 2 |
+| + Materialized aggregate at chart grain | 4.84 ± 0.63 s | **−53% ± 3** | 3.81 ± 0.35 s | −54% ± 2 |
+| + Only the main chart on the landing page | 3.91 ± 0.45 s | **−62% ± 2** | 2.11 ± 0.53 s | −75% ± 2 |
+| + Filter dropdowns fed from small dimension tables | 2.63 ± 0.38 s | **−75% ± 2** | 1.95 ± 0.25 s | −77% ± 1 |
+| **+ Lakehouse//RT warehouse (= all measures together)** | **0.96 ± 0.18 s** | **−91% ± 1** | **0.29 ± 0.01 s** * | **−96%** |
 
-Changes are vs the previous row; load times are mean ± standard deviation of 10 runs, changes ± one standard error.
+Every change is relative to the baseline (first row), so each row shows how far all steps up to it get you. Load times
+are mean ± standard deviation of 10 runs, changes ± one standard error.
 \* One of the 10 RT replay runs stalled: every query of that run, including trivial dropdown lookups, waited about
 11 s at the same moment. The value shown is the other 9 runs (all between 0.28 and 0.33 s); the mean of all 10 is
 1.39 s. The browser runs on RT showed no such stall.
@@ -122,12 +122,12 @@ Changes are vs the previous row; load times are mean ± standard deviation of 10
 
 - **All measures together took the landing page from 10.3 s to 1.0 s** cold in the browser (−91%) and the pure query
   time from 8.4 s to 0.29 s (−96%).
-- **Lakehouse//RT had the biggest impact (−63%),** followed by the **pre-joined table (−55%)** and the **dropdowns
-  from small tables (−33%).**
-- **The dropdowns from small tables saved 33% in the browser** but made no significant difference in the replay
-  (−7%), where the dropdown queries ran fully in parallel with the chart queries.
-- **The materialized aggregate made the chart queries 16% faster in the replay; the browser load did not change
-  significantly.** At that point the dropdowns were still scanning the 10M-row table.
+- **The pre-joined table did most of the work: it alone took the page from 10.3 s to 4.7 s.** The remaining steps took
+  it further to 3.9 s (lean landing page), 2.6 s (dropdowns from small tables) and 1.0 s (Lakehouse//RT).
+- **The dropdowns from small tables saved 1.3 s in the browser** (3.9 → 2.6 s) but made no significant difference in
+  the replay (2.11 → 1.95 s), where the dropdown queries ran fully in parallel with the chart queries.
+- **The materialized aggregate made the chart queries faster in the replay (4.55 → 3.81 s); the browser load did not
+  change significantly** (4.67 → 4.84 s). At that point the dropdowns were still scanning the 10M-row table.
 - **Subsequent (cached) loads were 2.2–2.5 s for every step.**
 
 ## 🗂️ What liquid clustering did
