@@ -46,6 +46,20 @@ Cluster keys: `fact_sales (week_id, country_id, brand_id)`, `wide_sales` and `ag
 `(week_idx, country_code, brand_name)`, dims on their primary key (`sql/04_clustered_tables.sql`, CTAS +
 `OPTIMIZE FULL`).
 
+## How it was measured
+
+Both flows cycle through their steps (about 6 s per step). Each step names the file and lines that do the work.
+For the full code of each step, open [`docs/measurement_flow.html`](docs/measurement_flow.html) locally:
+it has the same two flows with play/pause, step navigation and the code panels.
+
+**Browser benchmark**: Refresh after cache invalidation = first load; page navigation = subsequent load (dashboard cache)
+
+![Browser measurement flow](docs/browser_flow.svg)
+
+**SQL replay benchmark**: all landing-page queries fired in parallel straight at the warehouse
+
+![SQL replay measurement flow](docs/replay_flow.svg)
+
 ## Repository layout
 
 | Path | What it is |
@@ -64,6 +78,7 @@ Cluster keys: `fact_sales (week_id, country_id, brand_id)`, `wide_sales` and `ag
 | `step.sh`, `record.sh`, `invalidate.sh` | browser runs: log one measurement, invalidate the caches for the next one |
 | `report.py`, `server_side.py` | results tables (`results/summary.md`), warehouse-side check from `system.query.history` |
 | `chart.py`, `blog_pdf.py` | blog charts (`blog/{isolated,stacked}_chart.*`) and blog PDF |
+| `docs/` | measurement flow: `measurement_flow.html` (interactive) and the animated `*_flow.svg` used above |
 
 ## Running it
 
