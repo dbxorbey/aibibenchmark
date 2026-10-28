@@ -21,7 +21,7 @@ TSV = os.path.join(HERE, "out", "dashboards.tsv")
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("variants", nargs="*", help="variant keys, e.g. v0_baseline (default: all)")
+    ap.add_argument("variants", nargs="*", help="variant keys, e.g. l0_baseline (default: all)")
     a = ap.parse_args()
     w = WorkspaceClient(profile=config.PROFILE)
     folder = config.DASHBOARD_FOLDER or f"/Workspace/Users/{w.current_user.me().user_name}/aibi_bench"
@@ -33,10 +33,10 @@ def main():
             continue
         wh = config.warehouse(v["warehouse"])
         # display names must not contain '/' (e.g. "Lakehouse//RT")
-        name = re.sub(r"/+", "-", f"Dashboard benchmark - {v['label']}")
+        name = re.sub(r"/+", "-", f"Dashboard benchmark - {v['key']}")
         d = Dashboard(display_name=name, parent_path=folder, warehouse_id=wh,
                       serialized_dashboard=open(os.path.join(HERE, "out", f"{v['key']}.json")).read())
-        kw = {"dataset_catalog": config.CATALOG, "dataset_schema": config.SCHEMA}
+        kw = {"dataset_catalog": config.CATALOG, "dataset_schema": build.schema_of(v)}
         if v["key"] in ids:
             dash = w.lakeview.update(ids[v["key"]], d, **kw)
         else:

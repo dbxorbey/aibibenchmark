@@ -2,10 +2,10 @@
 
   DATABRICKS_CONFIG_PROFILE   profile in ~/.databrickscfg (optional; otherwise the SDK's default auth chain is used)
   BENCH_CATALOG               Unity Catalog catalog for the benchmark tables (default: main)
-  BENCH_SCHEMA                schema for the benchmark tables (default: aibi_bench)
-  BENCH_SCHEMA_LC             schema for the liquid-clustered copies used by lc/ (default: <BENCH_SCHEMA>_lc)
-  BENCH_WAREHOUSE_PRO         id of the serverless PRO warehouse (steps 0-5)
-  BENCH_WAREHOUSE_RT          id of the Lakehouse//RT warehouse (step 6)
+  BENCH_SCHEMA                schema for the generated (unclustered) tables (default: aibi_bench)
+  BENCH_SCHEMA_LC             schema for the liquid-clustered copies that the dashboards read (default: <BENCH_SCHEMA>_lc)
+  BENCH_WAREHOUSE_PRO         id of the serverless PRO warehouse
+  BENCH_WAREHOUSE_RT          id of the Lakehouse//RT warehouse (variants *_lakehousert)
   BENCH_WAREHOUSE_SETUP       warehouse for data generation and cache invalidation (default: BENCH_WAREHOUSE_PRO)
   BENCH_DASHBOARD_FOLDER      workspace folder for the dashboards (default: /Workspace/Users/<you>/aibi_bench)
 """

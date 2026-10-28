@@ -1,54 +1,75 @@
 # AI/BI dashboard performance benchmark
 
 What actually makes a Databricks AI/BI (Lakeview) dashboard load fast? This repo rebuilds a typical Tableau-style
-"Sales Performance | Overview" dashboard on AI/BI, on 10M rows of synthetic data, and applies common performance
-techniques **one at a time** (each step keeps the previous ones). Every step was measured 10 times, both as a pure
-query replay and in the browser.
+"Sales Performance | Overview" dashboard on AI/BI, on 10M rows of synthetic data, and measures common performance
+levers **on their own** (each alone on the baseline) and **stacked** (cumulative). The baseline is what a careful
+migration would start from: liquid-clustered star schema, all logic in a parameterized Unity Catalog metric view, 12
+charts and 16 filters on the landing page. Every variant was measured 10 times, both as a pure query replay and in
+the browser.
 
-**Latest run: [`lc/`](lc/README.md).** Re-run on a baseline with liquid clustering and a metric view on the
-star schema. Every lever is measured both on its own and stacked. Stacked, the cold browser load went from
-**10.3 s to 1.0 s** (−91%). On its own: Lakehouse//RT −66%, pre-joined table −55%, dropdowns from small tables −23%,
-materialized grain −22%, fewer widgets −20%. Liquid clustering itself gave no gain at 10M rows. Write-up:
-[`lc/blog/blog_post.md`](lc/blog/blog_post.md).
+Stacked, the cold browser load went from **10.3 s to 1.0 s** (−91%). On its own: Lakehouse//RT −66%, pre-joined
+table −55%, dropdowns from small tables −23%, materialized grain −22%, fewer widgets −20%. Liquid clustering itself
+gave no gain at 10M rows.
 
-**First run (this folder):** cumulative steps on an unclustered star schema. The cold landing-page load in the
-browser went from **9.4 s to 1.0 s** (−90%). Write-up: [`blog/blog_post.md`](blog/blog_post.md) (PDF:
-`blog/blog_post.pdf`), full numbers and statistics: [`RESULTS.md`](RESULTS.md), raw runs: `results/`.
+Write-up: [`blog/blog_post.md`](blog/blog_post.md) (PDF: `blog/blog_post.pdf`). Full numbers, findings and method:
+[`RESULTS.md`](RESULTS.md); raw runs: `results/`.
 
-| Step | What changes | Browser first load |
+The first run (cumulative steps on an unclustered star schema with inline SQL, 9.4 s → 1.0 s) is archived on the
+branch [`archive/first-run`](https://github.com/dbxorbey/aibibenchmark/tree/archive/first-run).
+
+| Stacked step | What changes | Browser first load |
 |---|---|---:|
-| 0 Baseline | star schema; every dataset joins fact + 6 dims and contains the full LOD SQL; 12 charts and 16 filters on the landing page; dropdown values come from the joined fact data | 9.43 ± 1.05 s |
-| 1 Pre-joined table | same datasets on one denormalized table (no joins) | 5.05 ± 0.61 s |
-| 2 Metric view with parameters | datasets query a parameterized Unity Catalog metric view | 5.51 ± 0.67 s |
-| 3 Materialized grain | the metric view reads a materialized product × country × week grain (13x fewer rows) | 4.96 ± 0.58 s |
-| 4 Fewer widgets on page 1 | only the main chart on the landing page; 11 charts move to a "Deep Dive" page | 3.73 ± 0.28 s |
-| 5 Dropdowns from small tables | filter dropdowns no longer query the 10M-row table | 2.94 ± 0.47 s |
-| 6 Lakehouse//RT | step 5 on a Lakehouse//RT warehouse | 0.96 ± 0.22 s |
+| 0 Baseline | liquid-clustered star schema; datasets query a parameterized metric view; 12 charts and 16 filters on the landing page; dropdown values come from the joined fact data | 10.31 ± 1.45 s |
+| 1 Pre-joined table | the metric view and the dropdowns read one denormalized table (no joins) | 4.67 ± 0.62 s |
+| 2 Materialized grain | the metric view reads a materialized product × country × week grain (13x fewer rows) | 4.84 ± 0.63 s |
+| 3 Fewer widgets on page 1 | only the main chart on the landing page; 11 charts move to a "Deep Dive" page | 3.91 ± 0.45 s |
+| 4 Dropdowns from small tables | filter dropdowns no longer query the 10M-row table | 2.63 ± 0.38 s |
+| 5 Lakehouse//RT | step 4 on a Lakehouse//RT warehouse | 0.96 ± 0.18 s |
+
+## Variants
+
+| Key | Variant | Change vs baseline |
+|---|---|---|
+| `l0_baseline` | Baseline | liquid-clustered star schema, metric view, 12 charts on page 1, dropdowns from the joined fact, PRO |
+| `li1_prejoined` | Isolated 1 = Stacked 1 | metric view and dropdowns on the pre-joined wide table |
+| `li2_matgrain` | Isolated 2 | metric view on the materialized grain, falls back to the star schema |
+| `li3_fewwidgets` | Isolated 3 | only the main chart on page 1 |
+| `li4_ignfilters` | Isolated 4 | dropdowns from tiny dims / static lists |
+| `li5_lakehousert` | Isolated 5 | baseline on Lakehouse//RT |
+| `ls2_matgrain` | Stacked 2 | stacked 1 + materialized grain (falls back to the wide table) |
+| `ls3_fewwidgets` | Stacked 3 | + only the main chart on page 1 |
+| `ls4_ignfilters` | Stacked 4 | + dropdowns from tiny dims |
+| `ls5_lakehousert` | Stacked 5 | + Lakehouse//RT |
+| `r_nolc` | Reference | baseline **without** liquid clustering (unclustered tables in `BENCH_SCHEMA`) |
+
+Cluster keys: `fact_sales (week_id, country_id, brand_id)`, `wide_sales` and `agg_product_country_week`
+`(week_idx, country_code, brand_name)`, dims on their primary key (`sql/04_clustered_tables.sql`, CTAS +
+`OPTIMIZE FULL`).
 
 ## Repository layout
 
 | Path | What it is |
 |---|---|
 | `config.py` | all settings, read from environment variables |
-| `sql/00–03_*.sql` | schema, synthetic data generator (star schema, wide table, materialized view) |
-| `sql/04_metric_views.sql` | metric view DDL, generated by `build.py` |
-| `sql/90_invalidate_caches.sql` | new Delta versions on all tables + full MV refresh (cold-load measurements) |
+| `sql/00–03_*.sql` | schema, synthetic data generator (star schema, pre-joined wide table), unclustered |
+| `sql/04_clustered_tables.sql` | liquid-clustered copies of all tables + the materialized grain, in `BENCH_SCHEMA_LC` |
+| `sql/05_metric_views.sql` | metric view DDL, generated by `build.py` |
+| `sql/90_*.sql`, `sql/91_*.sql` | new Delta versions on all tables (+ full MV refresh) for cold-load measurements |
 | `build.py` | generates the dashboard JSON of every variant from the same SQL templates (`out/`) |
 | `create_warehouses.py` | creates the PRO and Lakehouse//RT benchmark warehouses |
 | `deploy.py` | creates/updates and publishes one dashboard per variant |
-| `run_sql.py` | runs a `.sql` file on a warehouse, filling in `${catalog}` / `${schema}` |
+| `run_sql.py` | runs a `.sql` file on a warehouse, filling in `${catalog}` / `${schema}` / `${schema_lc}` |
 | `bench.py` | replay benchmark: fires all landing-page queries in parallel and times them |
-| `cold_unique.py` | single-query check with never-seen parameter combinations (no cache can hit) |
-| `browser/*.js` | browser timing snippets (run in the published dashboard, e.g. via Chrome DevTools) |
-| `record.sh` | appends one browser measurement to `results/browser_runs_extra.jsonl` |
-| `report.py`, `chart.py`, `blog_pdf.py` | results table, chart (`blog/runs_chart.*`), blog PDF |
-| `lc/` | latest run: liquid clustering + metric view baseline, isolated and stacked levers (see `lc/README.md`) |
+| `measure.js` | browser timing snippet (run in the published dashboard, e.g. via Chrome DevTools MCP) |
+| `step.sh`, `record.sh`, `invalidate.sh` | browser runs: log one measurement, invalidate the caches for the next one |
+| `report.py`, `server_side.py` | results tables (`results/summary.md`), warehouse-side check from `system.query.history` |
+| `chart.py`, `blog_pdf.py` | blog charts (`blog/{isolated,stacked}_chart.*`) and blog PDF |
 
 ## Running it
 
 ### 1. Prerequisites and configuration
 
-* A Databricks workspace with Unity Catalog, serverless SQL and (for step 6) the Lakehouse//RT Beta.
+* A Databricks workspace with Unity Catalog, serverless SQL and the Lakehouse//RT Beta (for `*_lakehousert`).
 * Python 3.10+ and the [Databricks CLI](https://docs.databricks.com/dev-tools/cli/) authenticated against the
   workspace (`databricks auth login`). Google Chrome for the chart/PDF export and the browser measurements.
 
@@ -58,65 +79,69 @@ pip install -r requirements.txt
 
 export DATABRICKS_CONFIG_PROFILE=<your-profile>   # optional, otherwise the default auth chain is used
 export BENCH_CATALOG=<catalog>                    # must exist; default: main
-export BENCH_SCHEMA=aibi_bench                    # created by sql/00_schema.sql
+export BENCH_SCHEMA=aibi_bench                    # generated data, unclustered (sql/00-03)
+export BENCH_SCHEMA_LC=aibi_bench_lc              # liquid-clustered copies (sql/04); default: <BENCH_SCHEMA>_lc
 ```
 
 ### 2. Warehouses
 
 ```bash
-python create_warehouses.py      # prints the two export lines below
-export BENCH_WAREHOUSE_PRO=<id>  # serverless PRO, Small, exactly 1 cluster (steps 0–5)
-export BENCH_WAREHOUSE_RT=<id>   # Lakehouse//RT, Small, exactly 1 cluster (step 6)
+python create_warehouses.py       # prints the two export lines below
+export BENCH_WAREHOUSE_PRO=<id>   # serverless PRO, Small, exactly 1 cluster
+export BENCH_WAREHOUSE_RT=<id>    # Lakehouse//RT, Small, exactly 1 cluster (*_lakehousert)
 export BENCH_WAREHOUSE_SETUP=<id> # optional: separate warehouse for data generation / cache invalidation
 ```
 
-Same size and no autoscaling on both, so the steps compare designs, not cluster counts.
+Same size and no autoscaling on both, so the variants compare designs, not cluster counts.
 
 ### 3. Data, metric views, dashboards
 
 ```bash
-python build.py                              # out/*.json + sql/04_metric_views.sql
+python build.py                              # out/*.json + sql/05_metric_views.sql
 for f in sql/0*.sql; do python run_sql.py "$f"; done
-python deploy.py                             # prints the published dashboard URLs
+python bench.py l0_baseline --check          # correctness: print the main chart result
+python deploy.py                             # 11 published dashboards (ids in out/dashboards.tsv)
 ```
 
 ### 4. Replay benchmark (pure query time)
 
 ```bash
-python bench.py v0_baseline --runs 10                   # one variant on its configured warehouse
-python bench.py v0_baseline --runs 10 --warehouse rt    # reference: baseline on Lakehouse//RT
-python bench.py v3_matgrain --check                     # print the main chart result (correctness check)
+python bench.py <variant> --runs 10          # one variant on its configured warehouse
+python bench.py l0_baseline --warehouse rt   # any variant on another warehouse
 ```
 
 *First load* disables the SQL result cache (`use_cached_result=false`); *subsequent load* enables it after one
-priming run. Sessions are opened before the timer starts. Results go to `results/replay_<variant>_<warehouse>.json`;
-`--append` adds runs to an existing file. Warm the warehouse with a few real queries first: right after a resume from
-auto-stop the first runs are about 2x slower (cold disk cache).
+priming run. Sessions are opened before the timer starts; one unmeasured full page load warms the warehouse (right
+after a resume from auto-stop the first runs are about 2x slower). Results go to
+`results/replay_<variant>_<warehouse>.json`; `--append` adds runs to an existing file. Run the PRO variants one after
+another; the RT variants can run in parallel to them.
 
 ### 5. Browser benchmark (what a user sees)
 
-1. Open the published dashboard of a variant in Chrome.
-2. `./invalidate.sh` (new table versions, so no cached result can be reused).
-3. Run `browser/refresh_measure.js` in the page (e.g. Chrome DevTools MCP `evaluate_script`, or paste the body into
-   the console): it clicks Refresh and reports the time until the last `lakeview-query` response.
-4. Reload the page and time it with `browser/browser_measure.js` for the subsequent (cached) load.
-5. `./record.sh <variant> <run> <first_s> <subsequent_s>` to log the run.
+1. Open each published dashboard once (warm-up, not recorded).
+2. `./step.sh <variant>` invalidates the caches of the schema that variant reads.
+3. Navigate to the dashboard in Chrome with the init script `performance.setResourceTimingBufferSize(10000)` and run
+   `measure.js` in the page (e.g. Chrome DevTools MCP `evaluate_script`): it times the page navigation (subsequent
+   load, dashboard cache), then clicks Refresh and times it until the last `lakeview-query` response (first load).
+4. `./step.sh <next_variant> <variant> <run> <first_s> <subsequent_s>` logs the run to `results/browser_runs.jsonl`
+   and prepares the next one. Interleave all dashboards round-robin, 10 rounds.
 
 Gotchas: publishing pre-warms the dashboard cache, and that cache ignores table-property commits, so use Refresh
-after `invalidate.sh` for cold timings. `lakeview-query` long-poll requests take ~5 s, so the scripts wait for 10 s
+after `invalidate.sh` for cold timings. `lakeview-query` long-poll requests take ~5 s, so the script waits for 10 s
 without new requests.
 
 ### 6. Report and charts
 
 ```bash
-python report.py                       # results/summary.md
-python chart.py && python blog_pdf.py  # blog/runs_chart.html + .svg, blog/blog_post.pdf
+python report.py                             # results/browser_<variant>.json + results/summary.md
+python server_side.py --since <UTC start of round 1>   # PRO only, results/server_side.json
+python chart.py && python blog_pdf.py        # blog/{isolated,stacked}_chart.html + .svg, blog/blog_post.pdf
 ```
 
 ### Cleanup
 
-Delete the two warehouses (`databricks warehouses delete <id>`), drop the schema and trash the dashboards
-(ids in `out/dashboards.tsv`).
+Delete the two warehouses (`databricks warehouses delete <id>`), drop both schemas and trash the dashboards (ids in
+`out/dashboards.tsv`).
 
 ## Data model (10M rows, synthetic)
 
@@ -129,9 +154,9 @@ Delete the two warehouses (`databricks warehouses delete <id>`), drop the schema
 | `dim_country` | 16 | country → country group |
 | `dim_brand` | 4 | Brand A–D |
 | `dim_pack_size` | 4 | packs of 2/3/4/6 |
-| `wide_sales` | 10,000,000 | step 1: everything pre-joined |
-| `agg_product_country_week` (materialized view) | ~772k | step 3: product × country × brand × week × flag grain |
-| `mv_sales_performance`, `mv_sales_performance_agg` (metric views) | – | steps 2 and 3+ |
+| `wide_sales` | 10,000,000 | everything pre-joined |
+| `agg_product_country_week` (materialized view, LC schema only) | ~772k | product × country × brand × week × flag grain |
+| `mv_sales_performance_star`, `mv_sales_performance`, `mv_sales_performance_agg`, `mv_sales_performance_agg_star` (metric views) | – | on the star schema, the wide table, the grain with fallback to the wide table / star schema |
 
 ### Metrics and LOD logic
 
@@ -144,11 +169,13 @@ All metrics use three levels of detail, the same structure Tableau `{FIXED}` exp
 3. **Split value** (e.g. country group): Σ country metric / COUNT(DISTINCT country), with the denominator computed on
    the fly after all filters.
 
-All 16 filters are dashboard parameters used inside the SQL (`size(:p) = 0 OR array_contains(:p, col)` for
-multi-selects), because the datasets pre-aggregate.
+All 16 filters are dashboard parameters passed to the metric view (`size(:p) = 0 OR array_contains(:p, col)` for
+multi-selects), because the LOD logic pre-aggregates before the split.
 
 ## Caveats
 
 Synthetic data modelled on a real dashboard; the values are not real business numbers. One Small cluster without
 autoscaling; larger data or more users will shift the absolute numbers. Lakehouse//RT is in Beta; its first query after
-idling takes about 2 s, and its queries did not show up in `system.query.history` at the time of testing.
+idling takes about 2 s, and its queries did not show up in `system.query.history` at the time of testing. If the
+workspace uses an IP access list, keep the client IP stable during long runs; a blocked IP makes the SQL connector
+retry for 15 minutes before it fails.

@@ -1,6 +1,6 @@
-"""Build an interactive bar chart of the benchmark: browser first load per cumulative step.
+"""Bar charts of the browser first load: isolated (each measure alone) and stacked (cumulative), % always vs the baseline.
 
-Usage: python chart.py  -> writes blog/runs_chart.html (interactive) and blog/runs_chart.svg (static, for the blog post)
+Usage: python chart.py  -> writes blog/{isolated,stacked}_chart.html (interactive) and .svg (static, for the blog post)
 """
 import html
 import json
@@ -9,19 +9,18 @@ import re
 import subprocess
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-# Blog order (cumulative steps). The metric view step (v2) is left out of the blog; v3+ still ran through it.
-STEPS = [("v0_baseline", "Baseline", "star schema"), ("v1_prejoined", "+ Pre-joined", "wide table"),
-         ("v3_matgrain", "+ Materialized", "aggregate"), ("v4_fewwidgets", "+ Lean", "landing page"),
-         ("v5_ignfilters", "+ Dropdowns from", "small tables"), ("v6_lakehousert", "+ Lakehouse//RT", "warehouse")]
+BASE = ("l0_baseline", "Baseline", "LC + metric view")
+# isolated: baseline first, then from the smallest to the largest single gain
+ISOLATED = [BASE, ("li3_fewwidgets", "+ Lean", "landing page"), ("li2_matgrain", "+ Materialized", "aggregate"),
+            ("li4_ignfilters", "+ Dropdowns from", "small tables"), ("li1_prejoined", "+ Pre-joined", "wide table"),
+            ("li5_lakehousert", "+ Lakehouse//RT", "warehouse")]
+STACKED = [BASE, ("li1_prejoined", "+ Pre-joined", "wide table"), ("ls2_matgrain", "+ Materialized", "aggregate"),
+           ("ls3_fewwidgets", "+ Lean", "landing page"), ("ls4_ignfilters", "+ Dropdowns from", "small tables"),
+           ("ls5_lakehousert", "+ Lakehouse//RT", "warehouse")]
 
 
-def runs(name, field):
-    return json.load(open(os.path.join(HERE, "results", name)))[field]
-
-
-def load():
-    steps = [{"l1": l1, "l2": l2, "runs": runs(f"browser_{k}.json", "first_load_runs_s")} for k, l1, l2 in STEPS]
-    return {"steps": steps}
+def runs(k):
+    return json.load(open(os.path.join(HERE, "results", f"browser_{k}.json")))["first_load_runs_s"]
 
 
 PAGE = r"""<!doctype html>
@@ -67,7 +66,7 @@ svg text { font-family: inherit; }
 #tip b { font-weight: 600; } #tip .m { color: var(--text-secondary); }
 </style></head>
 <body><div class="viz-root"><div class="card">
-<h1>Cold landing-page load per optimization step</h1>
+<h1>__TITLE__</h1>
   <div class="panel"><svg id="p-steps"></svg></div>
 </div><div id="tip"></div></div>
 <script>
@@ -100,7 +99,7 @@ function panel(id, rows, W, YMAX, title) {
     [m + s, Math.max(0, m - s)].forEach(v => el('line', {class: 'err', x1: cx - 6, x2: cx + 6, y1: y(v), y2: y(v)}, svg));
     const top = y(m + s);
     el('text', {class: 'val', x: cx, y: top - (i ? 18 : 6), 'text-anchor': 'middle'}, svg, `${m.toFixed(2)} ± ${s.toFixed(2)} s`);
-    if (i) { const p = mean(rows[i - 1].runs);
+    if (i) { const p = mean(rows[0].runs);
       el('text', {class: 'chg', x: cx, y: top - 6, 'text-anchor': 'middle'}, svg, (c => `${c > 0 ? '+' : c < 0 ? '−' : '±'}${Math.abs(c)}%`)(Math.round((m / p - 1) * 100))); }
     el('text', {class: 'lab', x: cx, y: H - bottom + 18, 'text-anchor': 'middle'}, svg, d.l1);
     el('text', {class: 'lab2', x: cx, y: H - bottom + 33, 'text-anchor': 'middle'}, svg, d.l2);
@@ -113,7 +112,7 @@ function panel(id, rows, W, YMAX, title) {
     hit.addEventListener('mouseleave', () => { bar.classList.remove('on'); tip.style.display = 'none'; });
   });
 }
-panel('p-steps', DATA.steps, 720, 12, 'Browser first load per cumulative step, descending from 9.4 s to 1.0 s');
+panel('p-steps', DATA.steps, 720, 12, '__ARIA__');
 
 </script></body></html>
 """
@@ -147,12 +146,22 @@ def write_svg(html_path, out):
     print(out)
 
 
+def write(name, bars, title, aria):
+    steps = [{"l1": l1, "l2": l2, "runs": runs(k)} for k, l1, l2 in bars]
+    out = os.path.join(HERE, "blog", f"{name}_chart.html")
+    open(out, "w").write(PAGE.replace("__TITLE__", title).replace("__ARIA__", aria)
+                         .replace("__DATA__", json.dumps({"steps": steps})))
+    print(out)
+    write_svg(out, os.path.join(HERE, "blog", f"{name}_chart.svg"))
+
+
 def main():
     os.makedirs(os.path.join(HERE, "blog"), exist_ok=True)
-    out = os.path.join(HERE, "blog", "runs_chart.html")
-    open(out, "w").write(PAGE.replace("__DATA__", json.dumps(load())))
-    print(out)
-    write_svg(out, os.path.join(HERE, "blog", "runs_chart.svg"))
+    first, last = (sum(runs(k)) / len(runs(k)) for k in (STACKED[0][0], STACKED[-1][0]))
+    write("isolated", ISOLATED, "Cold landing-page load, each measure on its own",
+          "Browser first load of the baseline and of each measure applied alone to the baseline")
+    write("stacked", STACKED, "Cold landing-page load per optimization step",
+          f"Browser first load per cumulative step, descending from {first:.1f} s to {last:.1f} s")
 
 
 if __name__ == "__main__":

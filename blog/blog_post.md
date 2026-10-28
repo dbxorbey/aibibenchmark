@@ -1,123 +1,238 @@
-# From 9.4 s to 1 s: what actually makes a Databricks AI/BI dashboard load fast
+# What really makes an AI/BI dashboard fast? Every lever on its own, then all of them together
 
-*A benchmark of five optimization techniques, 10 runs each*
+*Five performance techniques for Databricks AI/BI dashboards, 10 runs each: first in isolation, then stacked*
 
-When teams move dashboards from Tableau to Databricks AI/BI, the first question is often "will it be fast?" The second
-is "what do we change if it isn't?" Opinions are easy to find. We wanted numbers. So we rebuilt a real-world Tableau
-dashboard on AI/BI, a "Sales Performance | Overview" page with product ratings by country, brand and week. Then we
-applied common performance techniques one at a time and measured each one.
+A slow dashboard rarely gets a bug ticket. People just stop opening it and go back to their spreadsheet exports. When
+teams move their reporting to Databricks AI/BI, the first question I hear is "will it be fast?" The second one is "and
+if not, what do we change?"
 
-## The setup
+There is plenty of advice for the second question: pre-join your data, use fewer widgets, aggregate, use a faster
+warehouse. What I could not find were numbers. How much does each of these actually buy you, and how far do you get
+when you combine them?
+
+So I rebuilt a real customer dashboard on AI/BI and measured. I ran two experiments:
+
+1. **Each lever on its own.** Take the baseline and apply exactly one technique.
+2. **All levers stacked.** Apply the techniques one after another, each step keeping the previous ones.
+
+## 🧪 The setup
+
+The dashboard is a "Sales Performance | Overview" page with product ratings by country, brand and week.
+
+![Scrolling through the baseline dashboard](dashboard.gif)
+
+*Scrolling through the dashboard's landing page: 16 filter widgets, the main "Product Rating" chart and the 11
+secondary line charts below it. Synthetic data.*
 
 - **Data:** a 10-million-row synthetic star schema in Unity Catalog. One fact table of product sales plus six
-  dimensions (customers, products, weeks, countries, brands, pack sizes). That means every chart needs joins.
-- **Dashboard:** 16 filters (all dashboard parameters, several multi-select) and a main "Product Rating" chart with 11
-  more line charts on the landing page. The metrics are Tableau-style level-of-detail (LOD) calculations with three
-  aggregation levels. The denominator is computed on the fly after filters.
-- **Compute:** one serverless SQL warehouse (PRO, Small, a single cluster with no autoscaling), so we compare designs,
-  not cluster counts. The last step uses a Lakehouse//RT (real-time) warehouse of the same size.
+  dimensions (customers, products, weeks, countries, brands, pack sizes). Every chart needs joins. All tables use
+  **liquid clustering** on the columns the dashboard filters and joins on.
+- **Dashboard:** 16 filter widgets (5 single-select, 11 multi-select), all bound to dashboard parameters rather than
+  field filters, and a main "Product Rating" chart with 11 more line charts on the landing page. The parameters filter
+  at row level before aggregation. The metrics are level-of-detail (LOD) calculations with three aggregation levels, and
+  the denominator is computed on the fly after filters. Each filter widget also runs its own query to populate its
+  dropdown values.
+- **Query layer:** every chart dataset queries a **Unity Catalog metric view with parameters** that holds the LOD
+  logic. This is how I would build the dashboard as a governed starting point, so it is part of the baseline and of
+  every variant.
+- **Compute:** one serverless SQL warehouse (Small, a single cluster, no autoscaling), so I compare designs, not cluster
+  counts. The Lakehouse//RT runs use an RT warehouse of the same size.
 - **Two measurements, 10 runs each:**
   - **Replay** fires all of the landing page's queries in parallel straight at the warehouse. That is the pure query
     cost.
   - **Browser** opens the published dashboard in Chrome and times it until the last result arrives. That is what a
-    user sees.
-- **Two load types:**
-  - **First load:** all caches invalidated (new Delta versions on every table and a full refresh of the materialized
-    view). The query history confirms that no query was served from cache.
-  - **Subsequent load:** a page reload that hits the cache.
+    user sees. All 11 dashboards ran round-robin in the same session.
+- **First load vs subsequent load:** for the first load, all caches are invalidated (new Delta versions on every table
+  and a full refresh of the materialized view), so every query really runs. I checked this in the query history: none
+  of the measured first-load queries came from the result cache. The subsequent load is served from the dashboard
+  cache.
 
-The steps are cumulative. Each one builds on the previous.
+The levers:
 
-![Browser first load per step](runs_chart.svg)
+| Lever | What changes |
+|---|---|
+| Pre-joined wide table | the metric view and the dropdowns read one denormalized table instead of joining seven |
+| Materialized aggregate | the metric view reads a materialized view at product × country × week grain (772k rows instead of 10M) |
+| Lean landing page | only the main chart on page 1; the other 11 charts move to a "Deep Dive" page |
+| Dropdowns from small tables | filter values come from tiny dimension tables or static lists instead of the 10M-row fact |
+| Lakehouse//RT | the same dashboard on a Lakehouse//RT (real-time) warehouse |
 
-*Browser first load per step, from 9.4 s to 1.0 s. Mean of 10 runs with all caches invalidated; error bars and "±" are
-one standard deviation, % is the change vs the previous bar. Serverless PRO Small, last bar Lakehouse//RT Small.*
+## 🔬 Experiment 1: each lever on its own
 
-## Results
+Every variant is the baseline plus exactly one change.
 
-Sorted by impact (browser first load, change vs the previous step). Load times are mean ± standard deviation of 10
-runs; changes are ± one standard error. We tested each step against the previous one with a Welch t-test.
+![Browser first load, each measure on its own](isolated_chart.svg)
 
-| Step | Browser before | Browser after | Change (browser) | Replay before | Replay after | Change (replay) |
-|---|---:|---:|---:|---:|---:|---:|
-| Lakehouse//RT warehouse | 2.94 ± 0.47 s | 0.96 ± 0.22 s | **−67% ± 3** | 2.16 ± 0.40 s | 0.36 ± 0.14 s | −83% ± 2 |
-| Pre-joined wide table instead of a star schema | 9.43 ± 1.05 s | 5.05 ± 0.61 s | **−46% ± 3** | 7.70 ± 0.54 s | 4.72 ± 0.53 s | −39% ± 3 |
-| Only the main chart on the landing page | 4.96 ± 0.58 s | 3.73 ± 0.28 s | **−25% ± 3** | 3.91 ± 0.44 s | 2.14 ± 0.45 s | −45% ± 4 |
-| Filter dropdowns fed from small dimension tables | 3.73 ± 0.28 s | 2.94 ± 0.47 s | **−21% ± 4** | 2.14 ± 0.45 s | 2.16 ± 0.40 s | +1% ± 9 |
-| Materialized aggregate at chart grain | 5.05 ± 0.61 s | 4.96 ± 0.58 s | −2% ± 5 (not significant) | 4.72 ± 0.53 s | 3.91 ± 0.44 s | −17% ± 4 |
-| **All measures together** | **9.43 ± 1.05 s** | **0.96 ± 0.22 s** | **−90% ± 1** | **7.70 ± 0.54 s** | **0.36 ± 0.14 s** | **−95% ± 1** |
+*Browser first load of the baseline and of each lever applied alone to the baseline. Mean of 10 runs with all caches
+invalidated; error bars and "±" are one standard deviation, % is the change vs the baseline. Serverless SQL warehouse
+Small, last bar Lakehouse//RT Small. Liquid clustering and a metric view in every variant.*
 
-The order in which we applied them was: pre-join, materialized aggregate, lean landing page, dropdowns, Lakehouse//RT.
+| Lever (alone on the baseline) | Browser first load | Change (browser) | Replay first load | Change (replay) |
+|---|---:|---:|---:|---:|
+| Baseline | 10.31 ± 1.45 s | | 8.35 ± 0.54 s | |
+| Lakehouse//RT warehouse | 3.55 ± 0.17 s | **−66% ± 2** | 3.15 ± 0.11 s | −62% ± 1 |
+| Pre-joined wide table | 4.67 ± 0.62 s | **−55% ± 3** | 4.55 ± 0.58 s | −45% ± 2 |
+| Dropdowns from small tables | 7.93 ± 0.58 s | **−23% ± 4** | 7.79 ± 0.54 s | −7% ± 3 |
+| Materialized aggregate | 8.03 ± 0.77 s | **−22% ± 4** | 6.07 ± 0.42 s | −27% ± 2 |
+| Lean landing page | 8.24 ± 0.54 s | **−20% ± 4** | 6.06 ± 1.06 s | −27% ± 4 |
 
-Subsequent (cached) loads take about 1.9–2.4 s in the browser for every step. Most of that, about 1.6–1.9 s, is the
-dashboard app loading before the first query is sent.
+Load times are mean ± standard deviation of 10 runs; changes are ± one standard error. All changes are significant
+(Welch t-test against the baseline).
 
-## What we learned
+**Results:**
 
-**1. Lakehouse//RT is the single largest lever.** Switching the optimized dashboard to a Lakehouse//RT warehouse took
-the browser first load from 2.9 s to under 1 s. Even the unoptimized baseline got 66% faster on RT (replay 7.7 s to
-2.6 s). One caveat: on one Small cluster, RT's advantage shrinks under concurrency. It is about 5x faster for a single
-query and about 3x for a page of 28 queries.
+- **Lakehouse//RT had the biggest impact (−66%),** followed by the **pre-joined table (−55%).** Both make every query
+  on the page cheaper: the RT engine runs each query faster, and the wide table removes the joins.
+- **Feeding the dropdowns from small tables saved 23% in the browser, but only 7% in the replay.** In the baseline,
+  each of the 16 dropdown queries joins seven tables over 10 million rows to list a few distinct values. It is also the
+  simplest change of the five.
+- **The materialized aggregate (−22%) and the lean landing page (−20%) gained about as much in the browser as the
+  dropdowns.** Both only change the chart queries. The 16 dropdown queries stay the same and still take a large share
+  of the page load.
+- **Subsequent (cached) loads stayed between 2.2 and 2.7 s for all variants.** Most of that time is the dashboard app
+  loading before the first query is sent. The levers affect the first load and every filter change, because new
+  parameter values mean new, uncached queries.
 
-**2. Pre-join your data.** This was the biggest modelling gain: −46% in the browser. Every chart and every filter
-dropdown in the baseline joined seven tables. The 2-million-row customer dimension alone was about half of the join
-cost. One wide table removes that work from every query.
+## 🧱 Experiment 2: all levers stacked
 
-**3. Put fewer queries on the landing page.** Moving 11 secondary charts to a "Deep Dive" page cut the first load by a
-quarter. It cut almost half in the replay. On a single cluster, 28 concurrent queries queue behind each other. Every
-widget you take off the first page is one less query in that queue.
+The same levers, now applied one after another, each step keeping the previous ones.
 
-**4. Don't feed filter dropdowns from the fact table.** This one surprised us. In the replay it made no difference,
-because the dropdown queries are cheap single-column scans that run fully in parallel. In the browser it saved
-0.8 s (−21%, clearly significant with 10 runs). With only 3 runs it had looked like noise. That is a good reminder to
-measure more than once. Pointing dropdowns at small dimension tables is easy, so do it.
+![Browser first load per step](stacked_chart.svg)
 
-**5. Pre-aggregation helps the charts but can be hidden.** A materialized view at product × country × week grain
-(772k rows instead of 10M) made the landing-page queries 17% faster in the replay. In the browser the gain was within
-noise, because the filter dropdowns were still scanning the big table at that point. Fix the dropdowns and the
-pre-aggregation pays off fully.
+*Browser first load per step, from 10.3 s to 1.0 s. Mean of 10 runs with all caches invalidated; error bars and "±"
+are one standard deviation, % is the change vs the baseline. Serverless SQL warehouse Small, last bar Lakehouse//RT
+Small. Liquid clustering and a metric view in every step.*
 
-**6. Optimize for the cold path.** Cached loads look alike across all steps. What differs is the first load and every
-filter change. New parameter values mean new, uncached queries, and those are what your users feel.
+| Step (on top of the previous ones) | Browser first load | Change vs baseline (browser) | Replay first load | Change vs baseline (replay) |
+|---|---:|---:|---:|---:|
+| Baseline (star schema) | 10.31 ± 1.45 s | | 8.35 ± 0.54 s | |
+| + Pre-joined wide table instead of a star schema | 4.67 ± 0.62 s | **−55% ± 3** | 4.55 ± 0.58 s | −45% ± 2 |
+| + Materialized aggregate at chart grain | 4.84 ± 0.63 s | **−53% ± 3** | 3.81 ± 0.35 s | −54% ± 2 |
+| + Only the main chart on the landing page | 3.91 ± 0.45 s | **−62% ± 2** | 2.11 ± 0.53 s | −75% ± 2 |
+| + Filter dropdowns fed from small dimension tables | 2.63 ± 0.38 s | **−75% ± 2** | 1.95 ± 0.25 s | −77% ± 1 |
+| **+ Lakehouse//RT warehouse (= all measures together)** | **0.96 ± 0.18 s** | **−91% ± 1** | **0.29 ± 0.01 s** * | **−96%** |
 
-## Why not just switch to Lakehouse//RT?
+Every change is relative to the baseline (first row), so each row shows how far all steps up to it get you. Load times
+are mean ± standard deviation of 10 runs, changes ± one standard error.
+\* One of the 10 RT replay runs stalled: every query of that run, including trivial dropdown lookups, waited about
+11 s at the same moment. The value shown is the other 9 runs (all between 0.28 and 0.33 s); the mean of all 10 is
+1.39 s. The browser runs on RT showed no such stall.
 
-If RT is the largest lever, why bother with the modelling work? Because a single dashboard on an idle warehouse is not
-how dashboards run in production, and RT alone leaves most of the gain on the table:
+**Results:**
 
-- **RT alone is still 7x slower.** The unoptimized baseline on RT needs 2.6 s of pure query time for its landing page.
-  With all measures it needs 0.36 s. That is the same warehouse, doing far less work.
+- **All measures together took the landing page from 10.3 s to 1.0 s** cold in the browser (−91%) and the pure query
+  time from 8.4 s to 0.29 s (−96%).
+- **The pre-joined table did most of the work: it alone took the page from 10.3 s to 4.7 s.** The remaining steps took
+  it further to 3.9 s (lean landing page), 2.6 s (dropdowns from small tables) and 1.0 s (Lakehouse//RT).
+- **The dropdowns from small tables saved 1.3 s in the browser** (3.9 → 2.6 s) but made no significant difference in
+  the replay (2.11 → 1.95 s), where the dropdown queries ran fully in parallel with the chart queries.
+- **The materialized aggregate made the chart queries faster in the replay (4.55 → 3.81 s); the browser load did not
+  change significantly** (4.67 → 4.84 s). At that point the dropdowns were still scanning the 10M-row table.
+- **Subsequent (cached) loads were 2.2–2.5 s for every step.**
+
+## 🗂️ What liquid clustering did
+
+I also measured the baseline dashboard on the same tables **without** liquid clustering, in the same session:
+
+| | Browser first load | Replay first load |
+|---|---:|---:|
+| Without liquid clustering | 9.68 ± 1.85 s | 7.79 ± 0.43 s |
+| With liquid clustering (baseline) | 10.31 ± 1.45 s (+7%, not significant) | 8.35 ± 0.54 s (+7% ± 3) |
+
+At 10 million rows, liquid clustering did not make the dashboard faster. The query history shows why: on the star
+schema, the queries skipped no files at all. The dashboard filters on dimension columns (brand name, week), so the
+fact table's cluster keys are only reached through joins. In addition, the whole clustered fact table fits into one
+77 MB file, so there is little to skip in the first place.
+
+Clustering did skip files where the filters hit the cluster keys directly: on the pre-joined wide table and the
+materialized aggregate, the queries pruned 108–250 files over 9–10 page loads. Expect liquid clustering to matter at
+production volumes, with many files per table and filters on the clustered columns, not on a 10M-row demo.
+
+## 🤔 Why not just switch to Lakehouse//RT?
+
+If RT is the largest lever, why do the modelling work at all? Because one dashboard on an idle warehouse is not how
+dashboards run in production, and RT alone leaves most of the gain on the table:
+
+- **RT alone is much slower than RT plus a good model.** The baseline on RT needs 3.2 s of pure query time for its
+  landing page. With all measures it needs 0.29 s. Same warehouse, far less work.
 - **Every dashboard open costs warehouse capacity.** The baseline landing page fires 28 queries, each joining seven
   tables. Added up, those queries ran for about 55 s on RT per cold open. The optimized page fires 17 queries that add
-  up to about 3 s, roughly 18x less. A warehouse that serves one baseline dashboard could serve many optimized ones.
-- **Shared warehouses queue.** In practice many dashboards and users share one warehouse. Every cold open and every
-  filter change sends new, uncached queries. Their wait time grows with the number of queries in flight, not just
-  with how fast each one runs. We already saw this on a single page: 28 concurrent queries cut RT's advantage from
-  about 5x to about 3x. With many dashboards at once, heavy queries from one dashboard slow down all the others.
+  up to about 3 s, roughly 17x less.
+- **Shared warehouses queue.** In practice many dashboards and users share one warehouse, and every cold open and
+  filter change sends new, uncached queries. With many dashboards at once, the heavy queries of one dashboard slow down
+  all the others.
 - **The alternative is scaling out.** When queries queue, the warehouse adds clusters (if autoscaling allows it), and
-  you pay for them. Lean dashboards keep more users on fewer clusters. The modelling work is done once; the extra
-  compute for joins and unneeded widgets is paid on every load.
+  you pay for them. The modelling work is done once; the extra compute for joins and unneeded widgets is paid on every
+  load.
 
-RT makes good dashboards fast. The modelling measures make sure a shared warehouse can keep them fast for many users
-at once.
-
-## The playbook
+## ✅ The playbook
 
 1. Pre-join into one wide table (or a small number of them).
-2. Keep the landing page lean and move detail charts to secondary pages.
-3. Feed filter dropdowns from small dimension tables or static lists.
+2. Feed filter dropdowns from small dimension tables or static lists.
+3. Keep the landing page lean and move detail charts to secondary pages.
 4. Add a materialized aggregate at the grain your charts need.
 5. Run the dashboard on Lakehouse//RT if you need sub-second loads, on top of steps 1–4, not instead of them.
 
-Together these took the landing page from **9.4 s to 1.0 s** cold in the browser, **a 90% reduction**.
+Use metric views with parameters for governed, reusable metric definitions; they are part of every variant here and
+the gains above hold on top of them. Use liquid clustering on large tables, keyed on the columns your filters hit
+directly. On a small star schema it does not speed up the dashboard.
 
-## Caveats
+## ⚠️ Caveats
 
 The data is synthetic (10M rows) and modelled on the original dashboard; the values are not real business numbers.
-Everything ran on one Small cluster without autoscaling. Larger data or more users will shift the absolute numbers,
-and the dropdown and pre-aggregation effects should grow with table size. The summed query times above are each
-query's latency under the same parallel load, so they show how long the warehouse is busy, not exact compute cost.
-In our runs, the aggregate (and the steps after it) was queried through a Unity Catalog metric view; on its own, that
-layer made no significant difference to load time. Lakehouse//RT is in Beta. Its first query after idling takes about
-2 s. In this setup, filter selections on the Overview page don't carry over to the Deep Dive page, because it uses
+Everything ran on one Small cluster without autoscaling. Larger data or more users will shift the absolute numbers, and
+the dropdown, pre-aggregation and clustering effects should grow with table size. Both experiments ran in the same
+session, round-robin, so their numbers can be compared directly; the browser noise was about ±0.2–1.5 s per run, which
+the 10 runs per variant and the t-tests account for. Lakehouse//RT is in Beta, and its first query after idling takes
+about 2 s. Filter selections on the Overview page don't carry over to the Deep Dive page here, because it uses
 page-level filters; global filters would fix that.
+
+### Prerequisites and limitations of the levers
+
+None of the levers is free. Before you adopt one, check what it requires and what it rules out:
+
+- **Pre-joined wide table:** someone has to build and refresh it, usually as a materialized view or a pipeline step,
+  and it stores the joined data a second time. Every dimension change has to flow into the wide table before the
+  dashboard shows it.
+- **Materialized aggregate:** materialized views need Unity Catalog and a Pro or serverless SQL warehouse, and
+  serverless must be enabled in the workspace, because the refresh runs as a serverless pipeline that is billed
+  separately from the warehouse. The data is only as fresh as the last refresh, and incremental refresh is not
+  guaranteed (Delta sources need row tracking). The aggregate only helps charts at its grain or coarser; a filter on a
+  column it does not contain (here: the customer-level pack size and loyalty group) sends the query back to the fact table.
+- **Metric views with parameters:** parameters need a recent runtime (Databricks Runtime 18.2 or a current SQL
+  warehouse), and a parameterized metric view can't be materialized. That is why this benchmark puts a separate
+  materialized view underneath it instead.
+- **Liquid clustering:** it only skips files when a query filters on the cluster keys of that table, and only a few
+  keys per table make sense. Clustering is applied when data is written or optimized, so it needs `OPTIMIZE` runs (or
+  predictive optimization) to stay effective.
+- **Lean landing page:** fewer charts on page 1 means more clicks for the users who need the detail. With page-level
+  filters, the selections don't carry over to the other pages.
+- **Dropdowns from small tables:** the value lists are a second source to maintain. A dimension table can list values
+  that have no rows in the fact table, and a static list has to be updated by hand when new values appear.
+- **Lakehouse//RT:** in Beta, only in supported regions, and the account team has to enable it before an admin can
+  turn it on under Previews. It has to be a new warehouse; existing warehouses can't be converted. It runs ANSI
+  `SELECT` queries on Unity Catalog managed tables only (no external, foreign or system tables, no Delta Sharing), and
+  it doesn't support row-level security, column masks, AI functions, Python UDFs or Genie. Dashboard queries are
+  cancelled after 2 minutes (1-minute statement timeout by default), and there are caps on shuffle (300 GB per stage)
+  and the number of files read (10,000 after pruning). Clients must use the Statement Execution API, so older ODBC
+  and Thrift-based drivers don't work.
+
+Requirements and limits change quickly, especially for Beta features, so check the current documentation before you
+plan around them.
+
+## 🔭 Outlook: secondary indexes
+
+One lever I did not test yet: **secondary indexes** on Unity Catalog managed tables, which Databricks has been
+introducing in Beta. Dashboard filters are mostly equality and `IN` lookups (`country IN (...)`,
+`brand = ...`), often on columns that are not the table's clustering keys. As the clustering result shows, liquid
+clustering only helps for the few columns it is keyed on, and not at all when the filter sits on a joined dimension;
+an index on the other columns could let a query skip most files instead of scanning the table.
+
+That matters most where the levers above stop helping: the filters that hit the 10M-row table, such as the customer
+attributes the materialized aggregate cannot contain, and Lakehouse//RT, whose limit on files read rewards selective
+scans. Like the other features, indexes come with prerequisites: Beta enablement, managed Delta or Iceberg tables with
+row tracking, a few indexes per table, and an explicit `REFRESH INDEX` after writes. Next on my list is measuring
+what they bring to the first load and to filter changes.
+
+Have you measured your own dashboards? I'd be curious whether the dropdown cost shows up for you as well. Let me know
+what you found, or which lever I should test next.

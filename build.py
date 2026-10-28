@@ -1,21 +1,33 @@
 """Generate the benchmark artifacts (metric-view DDL + dashboard JSON) for every variant.
 
-Variants are cumulative (each step keeps the previous optimizations):
-  v0_baseline   star schema, joins + LOD logic inline in every dataset, 12 charts on page 1
-  v1_prejoined  same datasets, but on one pre-joined wide table
-  v2_metricview datasets query a UC metric view with parameters (LOD logic lives in the metric view)
-  v3_matgrain   metric view routes to a materialized product x country x week grain when possible
-  v4_fewwidgets only the main chart on page 1, secondary charts moved to a "Deep Dive" page
-  v5_ignfilters filter dropdowns fed from tiny dimension datasets instead of the 10M-row table
-  v6_lakehousert same as v5, executed on a Lakehouse//RT warehouse
+All variants read schema BENCH_SCHEMA_LC (liquid-clustered copies of BENCH_SCHEMA, see sql/04_clustered_tables.sql),
+except the reference r_nolc, which reads the unclustered tables in BENCH_SCHEMA. Every variant queries a
+parameterized metric view.
 
-Usage: python build.py   -> writes out/<variant>.json, out/<variant>_replay.json, sql/04_metric_views.sql
+  l0_baseline     liquid clustering + metric view on the star schema, 12 charts on page 1, dropdowns from joined fact, PRO
+Isolated (each measure alone on l0):
+  li1_prejoined   metric view on the pre-joined wide table, dropdowns from the wide table      (= stacked step 1)
+  li2_matgrain    metric view on the materialized grain, fallback to the star schema
+  li3_fewwidgets  only the main chart on page 1
+  li4_ignfilters  dropdown values from tiny dims / static lists
+  li5_lakehousert l0 on the Lakehouse//RT warehouse
+Stacked (cumulative, starting from l0 -> li1):
+  ls2_matgrain    + materialized grain (fallback to the wide table)
+  ls3_fewwidgets  + only the main chart on page 1
+  ls4_ignfilters  + dropdown values from tiny dims
+  ls5_lakehousert + Lakehouse//RT
+Reference:
+  r_nolc          l0 without liquid clustering (metric view on the unclustered star schema in BENCH_SCHEMA)
+
+Usage: python build.py   -> writes out/<variant>.json, out/<variant>_replay.json, sql/05_metric_views.sql
 """
 import json
 import os
 
+import config
+
 # metric-view DDL uses fully qualified names; run_sql.py fills the placeholders from config.py
-FQ = "${catalog}.${schema}"
+FQ = "${catalog}.${schema_lc}"
 
 # ---------------------------------------------------------------------------------------------
 # Parameters (dashboard variables)
@@ -30,7 +42,7 @@ SINGLE_PARAMS = {
     "p_metric": ("Select metric", "Wt. Product Rating excl. flagged",
                  ["Wt. Product Rating excl. flagged", "Wt. Product Rating", "Avg. Product Rating excl. flagged", "Avg. Product Rating"]),
 }
-# keyword: (title, column in wide/agg table, star-schema column, default selection, dim source for v5+)
+# keyword: (title, column in wide/agg table, star-schema column, default selection, dim source for small dropdowns)
 MULTI_PARAMS = {
     "f_brand": ("Brand Name", "brand_name", "b.brand_name", ["Brand A"], ("dim_brand", "brand_name")),
     "f_country_group": ("Country Group", "country_group", "c.country_group", [], ("dim_country", "country_group")),
@@ -170,12 +182,14 @@ def use_agg_pred(x):
 
 
 def product_lod(x, source):
-    if source != "agg":
+    """source: star | wide | agg (materialized grain, falls back to wide) | agg_star (falls back to the star schema)"""
+    if source not in ("agg", "agg_star"):
         return detail_product_lod(x, source)
+    fallback = "wide" if source == "agg" else "star"
     # both branches are guarded by constant predicates -> the optimizer prunes the unused one
     return (f"SELECT * FROM ({agg_product_lod(x)}) WHERE {use_agg_pred(x)}\n"
             f"  UNION ALL\n"
-            f"  SELECT * FROM ({detail_product_lod(x, 'wide')}) WHERE NOT {use_agg_pred(x)}")
+            f"  SELECT * FROM ({detail_product_lod(x, fallback)}) WHERE NOT {use_agg_pred(x)}")
 
 
 def country_lod(x, source):
@@ -283,7 +297,7 @@ def widget_sql(variant, w):
 
 
 # ---------------------------------------------------------------------------------------------
-# Metric views (steps 2 and 3)
+# Metric views
 # ---------------------------------------------------------------------------------------------
 def metric_view_ddl(name, source):
     x = Ctx(True)
@@ -351,7 +365,7 @@ def filter_value_datasets(variant):
     if variant["filter_values"] == "fact":
         # every dropdown is populated from the full (joined) fact data - typical lift & shift from Tableau
         cols = [c for (_, c, _, _, _) in MULTI_PARAMS.values()]
-        if variant["source"] == "star":
+        if variant["source"] in ("star", "agg_star"):
             sel = ", ".join(f"{STAR_COLS[c]}" for c in cols)
             sql = (f"SELECT {sel}\nFROM fact_sales d\n"
                    "JOIN dim_week w ON d.week_id = w.week_id\nJOIN dim_country c ON d.country_id = c.country_id\n"
@@ -508,37 +522,56 @@ def build_dashboard(variant):
     return dash, replay
 
 
+def schema_of(variant):
+    return config.SCHEMA_LC if variant["schema"] == "lc" else config.SCHEMA
+
+
+BASE = {"mode": "mv", "source": "star", "metric_view": "mv_sales_performance_star", "page1_all": True,
+        "filter_values": "fact", "warehouse": "pro", "schema": "lc"}
+PREJ = {**BASE, "source": "wide", "metric_view": "mv_sales_performance"}
+STK2 = {**PREJ, "source": "agg", "metric_view": "mv_sales_performance_agg"}
 VARIANTS = [
-    {"key": "v0_baseline", "label": "0 - Baseline (star schema)", "mode": "sql", "source": "star",
-     "page1_all": True, "filter_values": "fact", "warehouse": "pro",
-     "desc": "Normalized fact + 6 dims joined in every dataset; LOD logic inline; 12 charts on page 1."},
-    {"key": "v1_prejoined", "label": "1 - Pre-joined wide table", "mode": "sql", "source": "wide",
-     "page1_all": True, "filter_values": "fact", "warehouse": "pro",
-     "desc": "Same datasets, reading one denormalized table (no joins)."},
-    {"key": "v2_metricview", "label": "2 - Metric view with parameters", "mode": "mv", "source": "wide",
-     "metric_view": "mv_sales_performance", "page1_all": True, "filter_values": "fact", "warehouse": "pro",
-     "desc": "Datasets query a parameterized UC metric view (LOD logic governed in the metric view)."},
-    {"key": "v3_matgrain", "label": "3 - Materialized grain", "mode": "mv", "source": "agg",
-     "metric_view": "mv_sales_performance_agg", "page1_all": True, "filter_values": "fact", "warehouse": "pro",
-     "desc": "Metric view reads a materialized product x country x week grain (13x fewer rows) unless pack size / loyalty is used."},
-    {"key": "v4_fewwidgets", "label": "4 - Fewer widgets on page 1", "mode": "mv", "source": "agg",
-     "metric_view": "mv_sales_performance_agg", "page1_all": False, "filter_values": "fact", "warehouse": "pro",
-     "desc": "Only the main chart on the landing page; the 11 secondary charts move to 'Deep Dive'."},
-    {"key": "v5_ignfilters", "label": "5 - Ignored filters", "mode": "mv", "source": "agg",
-     "metric_view": "mv_sales_performance_agg", "page1_all": False, "filter_values": "dims", "warehouse": "pro",
-     "desc": "Filter dropdowns no longer query the 10M-row table (values from tiny dims / static lists)."},
-    {"key": "v6_lakehousert", "label": "6 - Lakehouse//RT", "mode": "mv", "source": "agg",
-     "metric_view": "mv_sales_performance_agg", "page1_all": False, "filter_values": "dims", "warehouse": "rt",
-     "desc": "Same as step 5, executed on a Lakehouse//RT (Real-Time) warehouse."},
+    {**BASE, "key": "l0_baseline", "label": "0 - Baseline (liquid clustering + metric view on star schema)",
+     "desc": "Liquid-clustered fact + 6 dims; datasets query a parameterized metric view on the star schema; "
+             "12 charts on page 1."},
+    {**PREJ, "key": "li1_prejoined", "label": "Isolated 1 / Stacked 1 - + pre-joined wide table",
+     "desc": "Baseline, but the metric view (and the dropdowns) read one denormalized table (no joins)."},
+    {**BASE, "key": "li2_matgrain", "label": "Isolated 2 - + materialized grain",
+     "source": "agg_star", "metric_view": "mv_sales_performance_agg_star",
+     "desc": "Baseline, but the metric view reads the materialized product x country x week grain (falls back to the "
+             "star schema for pack size / loyalty)."},
+    {**BASE, "key": "li3_fewwidgets", "label": "Isolated 3 - + fewer widgets on page 1", "page1_all": False,
+     "desc": "Baseline, but only the main chart on the landing page; the 11 secondary charts move to 'Deep Dive'."},
+    {**BASE, "key": "li4_ignfilters", "label": "Isolated 4 - + ignored filters", "filter_values": "dims",
+     "desc": "Baseline, but filter dropdowns read tiny dim tables / static lists instead of the joined 10M-row fact."},
+    {**BASE, "key": "li5_lakehousert", "label": "Isolated 5 - Baseline on Lakehouse//RT", "warehouse": "rt",
+     "desc": "Baseline dashboard unchanged, executed on a Lakehouse//RT (Real-Time) warehouse."},
+    {**STK2, "key": "ls2_matgrain", "label": "Stacked 2 - + materialized grain",
+     "desc": "Pre-joined + metric view routes to the materialized grain (falls back to the wide table)."},
+    {**STK2, "key": "ls3_fewwidgets", "label": "Stacked 3 - + fewer widgets on page 1", "page1_all": False,
+     "desc": "Stacked 2 + only the main chart on the landing page; 11 secondary charts on 'Deep Dive'."},
+    {**STK2, "key": "ls4_ignfilters", "label": "Stacked 4 - + ignored filters", "page1_all": False,
+     "filter_values": "dims", "desc": "Stacked 3 + filter dropdowns from tiny dims / static lists."},
+    {**STK2, "key": "ls5_lakehousert", "label": "Stacked 5 - + Lakehouse//RT", "page1_all": False,
+     "filter_values": "dims", "warehouse": "rt", "desc": "Stacked 4, executed on a Lakehouse//RT warehouse."},
+    {**BASE, "key": "r_nolc", "label": "Reference - baseline without liquid clustering", "schema": "base",
+     "desc": "Parameterized metric view on the unclustered star schema."},
 ]
+ISOLATED = ["l0_baseline", "li1_prejoined", "li2_matgrain", "li3_fewwidgets", "li4_ignfilters", "li5_lakehousert"]
+STACKED = ["l0_baseline", "li1_prejoined", "ls2_matgrain", "ls3_fewwidgets", "ls4_ignfilters", "ls5_lakehousert"]
+# (name, source, schema placeholder)
+METRIC_VIEWS = [("mv_sales_performance_star", "star", "schema_lc"), ("mv_sales_performance", "wide", "schema_lc"),
+                ("mv_sales_performance_agg", "agg", "schema_lc"), ("mv_sales_performance_agg_star", "agg_star", "schema_lc"),
+                ("mv_sales_performance_star", "star", "schema")]
 
 if __name__ == "__main__":
     here = os.path.dirname(os.path.abspath(__file__))
     os.makedirs(os.path.join(here, "out"), exist_ok=True)
-    with open(os.path.join(here, "sql", "04_metric_views.sql"), "w") as f:
+    with open(os.path.join(here, "sql", "05_metric_views.sql"), "w") as f:
         f.write("-- Generated by build.py\n")
-        f.write(metric_view_ddl("mv_sales_performance", "wide"))
-        f.write(metric_view_ddl("mv_sales_performance_agg", "agg"))
+        for name, source, sch in METRIC_VIEWS:
+            FQ = "${catalog}.${" + sch + "}"
+            f.write(metric_view_ddl(name, source))
     for v in VARIANTS:
         dash, replay = build_dashboard(v)
         json.dump(dash, open(os.path.join(here, "out", f"{v['key']}.json"), "w"), indent=1)

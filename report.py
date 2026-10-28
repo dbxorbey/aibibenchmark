@@ -1,57 +1,68 @@
-"""Build the results table (markdown, mean ± sample std dev) from results/*.json.
+"""Summarize the liquid-clustering re-run: isolated + stacked tables, change vs baseline / previous step, Welch t.
 
-Usage: python report.py  -> prints markdown, writes results/summary.md
+Usage: python report.py  -> writes results/browser_<variant>.json and results/summary.md
 """
-import glob
+import collections
 import json
+import math
 import os
-import statistics
+import statistics as st
 
 import build
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+R = os.path.join(HERE, "results")
+V = {v["key"]: v for v in build.VARIANTS}
 
 
-def load(pattern):
-    out = {}
-    for f in glob.glob(os.path.join(HERE, "results", pattern)):
-        r = json.load(open(f))
-        out[os.path.basename(f)] = r
+def ms(x):
+    return f"{st.mean(x):.2f} ± {st.stdev(x):.2f}"
+
+
+def welch(a, b):
+    return (st.mean(a) - st.mean(b)) / math.sqrt(st.variance(a) / len(a) + st.variance(b) / len(b))
+
+
+def delta(a, b):
+    return f"{(st.mean(a) / st.mean(b) - 1) * 100:+.0f}% ({welch(a, b):+.1f})"
+
+
+browser = collections.defaultdict(lambda: {"first": [], "sub": []})
+for line in open(os.path.join(R, "browser_runs.jsonl")):
+    r = json.loads(line)
+    browser[r["variant"]]["first"].append(r["first_load_s"])
+    browser[r["variant"]]["sub"].append(r["subsequent_load_s"])
+
+data = {}
+for k, v in V.items():
+    rep = json.load(open(os.path.join(R, f"replay_{k}_{v['warehouse']}.json")))
+    b = browser[k]
+    json.dump({"variant": k, "first_load_runs_s": b["first"], "subsequent_load_runs_s": b["sub"],
+               "first_load_mean_s": st.mean(b["first"]), "first_load_stdev_s": st.stdev(b["first"]),
+               "subsequent_load_mean_s": st.mean(b["sub"]), "subsequent_load_stdev_s": st.stdev(b["sub"]),
+               "first_load_method": "Refresh button after step.sh (invalidate.sh; r_nolc: invalidate.sh nolc)",
+               "subsequent_method": "page navigation right before the Refresh (dashboard cache)"},
+              open(os.path.join(R, f"browser_{k}.json"), "w"), indent=1)
+    data[k] = (rep["first_load_s"], rep["subsequent_load_s"], b["first"], b["sub"], rep["n_queries"])
+
+
+def table(title, keys, vs_prev):
+    hdr = "vs previous step (t)" if vs_prev else "vs baseline (t)"
+    out = [f"### {title}", "",
+           f"| Variant | Queries | Replay first | {hdr} | Replay subsequent | Browser first | {hdr} | Browser subsequent |",
+           "|---|---:|---:|---:|---:|---:|---:|---:|"]
+    for i, k in enumerate(keys):
+        rf, rs, bf, bs, n = data[k]
+        ref = data[keys[i - 1] if vs_prev else keys[0]] if i else None
+        d1 = delta(rf, ref[0]) if ref else "–"
+        d2 = delta(bf, ref[2]) if ref else "–"
+        out.append(f"| {V[k]['label']} | {n} | {ms(rf)} | {d1} | {ms(rs)} | {ms(bf)} | {d2} | {ms(bs)} |")
     return out
 
 
-def main():
-    replay = load("replay_*.json")
-    browser = load("browser_*.json")
-    def ms(x):
-        return "-" if not x else f"{statistics.mean(x):.2f} ± {statistics.stdev(x):.2f}" if len(x) > 1 else f"{x[0]:.2f}"
-
-    rows = []
-    base_first = None
-    for v in build.VARIANTS:
-        r = replay.get(f"replay_{v['key']}_{v['warehouse']}.json")
-        b = browser.get(f"browser_{v['key']}.json", {})
-        if not r:
-            continue
-        mean_first = statistics.mean(r["first_load_s"])
-        if base_first is None:
-            base_first = mean_first
-        rows.append((v["label"], r["n_queries"], ms(r["first_load_s"]), ms(r["subsequent_load_s"]),
-                     mean_first / base_first, ms(b.get("first_load_runs_s")), ms(b.get("subsequent_load_runs_s"))))
-    ref = replay.get("replay_v0_baseline_rt.json")
-
-    md = ["| Step | Queries on page-1 load | Replay first load (s) | Replay subsequent load (s) | First load vs baseline | "
-          "Browser first load (s) | Browser subsequent load (s) |",
-          "|---|---:|---:|---:|---:|---:|---:|"]
-    for label, n, fl, sl, rel, bf, ps in rows:
-        md.append(f"| {label} | {n} | {fl} | {sl} | {rel:.0%} | {bf} | {ps} |")
-    if ref:
-        md.append(f"| (ref) Baseline on Lakehouse//RT | {ref['n_queries']} | {ms(ref['first_load_s'])} | "
-                  f"{ms(ref['subsequent_load_s'])} | {statistics.mean(ref['first_load_s']) / base_first:.0%} | - | - |")
-    text = "\n".join(md)
-    open(os.path.join(HERE, "results", "summary.md"), "w").write(text + "\n")
-    print(text)
-
-
-if __name__ == "__main__":
-    main()
+out = table("Isolated (each measure alone vs baseline)", build.ISOLATED, False) + [""]
+out += table("Stacked (cumulative, vs previous step)", build.STACKED, True) + [""]
+out += table("Stacked total (vs baseline)", build.STACKED, False) + [""]
+out += table("Effect of liquid clustering (reference without LC vs LC baseline)", ["r_nolc", "l0_baseline"], False)
+open(os.path.join(R, "summary.md"), "w").write("\n".join(out) + "\n")
+print("\n".join(out))
